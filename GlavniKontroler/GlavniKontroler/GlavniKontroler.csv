@@ -1,0 +1,13 @@
+"Id";"Designator";"Footprint";"Quantity";"Designation";"Supplier and ref";
+1;"J7";"TerminalBlock_Phoenix_MKDS-1,5-2-5.08_1x02_P5.08mm_Horizontal";1;"Screw_Terminal_01x02";;;
+2;"D8,D7,D6,D5,D4,D3,D2,D1";"D_DO-15_P10.16mm_Horizontal";8;"1N53xxB";;;
+3;"R9,R8,R7,R6,R5,R4,R3,R2,R1";"R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal";9;"10000";;;
+4;"Q9";"TO-92_Inline";1;"NPN";;;
+5;"Q8,Q7,Q6,Q5,Q4,Q3,Q2,Q1";"TO-92_Inline";8;"BC337";;;
+6;"J6";"PinHeader_1x04_P2.54mm_Vertical";1;"Ekran";;;
+7;"J5";"PinHeader_1x04_P2.54mm_Vertical";1;"Napajanje 12V";;;
+8;"J4";"TerminalBlock_Phoenix_MKDS-1,5-10_1x10_P5.00mm_Horizontal";1;"Screw_Terminal_01x10";;;
+9;"J3";"TerminalBlock_Phoenix_MKDS-1,5-2_1x02_P5.00mm_Horizontal";1;"Napajanje za osjetni modul";;;
+10;"J2,J1";"PinHeader_1x04_P2.54mm_Vertical";2;"MAX485";;;
+11;"F1";"Fuseholder_Clip-5x20mm_Littelfuse_111_Inline_P20.00x5.00mm_D1.05mm_Horizontal";1;"Fuse_Small";;;
+12;"A1";"Arduino_Nano";1;"Arduino_Nano_v3.x";;;
