@@ -19,11 +19,15 @@ int kTypeTemp = 0;
 unsigned long lastCommandSent;
 unsigned long commandInterval = 1000; // 1 second
 
-int RX_PIN = 4;  // Software Serial RX -> MAX485 RO
 int TX_PIN = 2; // Software Serial TX -> MAX485 DI
 int TXEnable = 3; // DE,RE pin for MAX485
+int RX_PIN = 4;  // Software Serial RX -> MAX485 RO
 
 SoftwareSerial rs485Serial(RX_PIN, TX_PIN);
+
+int NextionRX = 5; // Nextion RX
+int NextionTX = 6; // Nextion TX
+SoftwareSerial nextionDisplay(NextionRX, NextionTX);
 
 void ReceiveDataFromSlave();
 void SendCommandToSlave();
@@ -39,7 +43,7 @@ void loop()
   if(millis() - commandInterval > lastCommandSent) {
     SendCommandToSlave();
   }
-  
+
   ReceiveDataFromSlave();
 }
 
