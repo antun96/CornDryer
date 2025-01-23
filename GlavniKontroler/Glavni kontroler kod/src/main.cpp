@@ -1,10 +1,16 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
+#include "EasyNextionLibrary.h"  // Include EasyNextionLibrary
 
 int ds1Temp = 0;
 int ds2Temp = 0;
 int ds3Temp = 0;
 int ds4Temp = 0; // TODO: maybe not needed
+
+uint8_t ds1Address[8];
+uint8_t ds2Address[8];
+uint8_t ds3Address[8];
+uint8_t ds4Address[8];
 
 int cap1State = 0;
 int cap2State = 0;
@@ -27,7 +33,8 @@ SoftwareSerial rs485Serial(RX_PIN, TX_PIN);
 
 int NextionRX = 5; // Nextion RX
 int NextionTX = 6; // Nextion TX
-SoftwareSerial nextionDisplay(NextionRX, NextionTX);
+SoftwareSerial nextionSerial(NextionRX, NextionTX);
+EasyNex nexDisplay(nextionSerial); 
 
 void ReceiveDataFromSlave();
 void SendCommandToSlave();
@@ -55,14 +62,14 @@ void ReceiveDataFromSlave()
     uint8_t buffer[bufferSize];
     int length = 0;
     int cache = 0;
-
+    unsigned long timeout = millis() + 1000; // Timeout after 1 second
     // Read data from SoftwareSerial into buffer
-    while (rs485Serial.available() && length < bufferSize) {
+    while (rs485Serial.available() && length < bufferSize && millis() < timeout){
       cache = rs485Serial.read();
+      buffer[length++] = cache;
       if(cache == 0xFF) {
         break;
       }
-      buffer[length++] = cache;
     }
     ParseMessage(buffer, length);
   }

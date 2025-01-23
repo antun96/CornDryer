@@ -172,12 +172,16 @@ void CreateReply()
 {
   digitalWrite(TXEnable, HIGH);
   rs485Serial.write(static_cast<uint8_t>(0x00));
+
   rs485Serial.write(static_cast<uint8_t>(0xD1));
   rs485Serial.write(static_cast<uint8_t>(ds1Temp));
+
   rs485Serial.write(static_cast<uint8_t>(0xD2));
   rs485Serial.write(static_cast<uint8_t>(ds2Temp));
+
   rs485Serial.write(static_cast<uint8_t>(0xD3));
   rs485Serial.write(static_cast<uint8_t>(ds3Temp));
+
   rs485Serial.write(static_cast<uint8_t>(0xD4));
   rs485Serial.write(static_cast<uint8_t>(ds4Temp));
 
