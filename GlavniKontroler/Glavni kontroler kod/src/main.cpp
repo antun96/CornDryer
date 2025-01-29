@@ -2,28 +2,26 @@
 #include <SoftwareSerial.h>
 #include "EasyNextionLibrary.h"  // Include EasyNextionLibrary
 
-int ds1Temp = 0;
-int ds2Temp = 0;
-int ds3Temp = 0;
-int ds4Temp = 0; // TODO: maybe not needed
-
-uint8_t ds1Address[8];
-uint8_t ds2Address[8];
-uint8_t ds3Address[8];
-uint8_t ds4Address[8];
-
-int cap1State = 0;
-int cap2State = 0;
-int cap3State = 0;
-int cap4State = 0;
-int cap5State = 0;
-int cap6State = 0;
-
-int fotoSensorValue = 0;
-int kTypeTemp = 0;
+/// @brief Pin for turning auger on/off
+int augerPin = A0;
+/// @brief Pin for turning horizontal auger on/off
+int horizontalAugerPin = A1; 
+/// @brief Pin for turning radial fan on/off
+int radialFanPin = A2;
+/// @brief Pin for turning heater on/off
+int heaterPin = A3;
+/// @brief Pin for turning cooling fan on/off
+int coolingFanPin = A4;
+/// @brief Pin for turning floor auger on/off
+int floorAugerPin = A5;
+/// @brief Pin for turning air blower on/off
+int airBlowerPin = A6;
+/// @brief Pin for turning buzzer on/off
+int buzzerPin = A7;
 
 unsigned long lastCommandSent;
-unsigned long commandInterval = 1000; // 1 second
+unsigned long COMMAND_INTERVAL_TIME_MS = 1000; // 1 second
+unsigned long const SOFT_START_DELAY_MS = 10000; // 10 seconds
 
 int TX_PIN = 2; // Software Serial TX -> MAX485 DI
 int TXEnable = 3; // DE,RE pin for MAX485
@@ -36,22 +34,204 @@ int NextionTX = 6; // Nextion TX
 SoftwareSerial nextionSerial(NextionRX, NextionTX);
 EasyNex nexDisplay(nextionSerial); 
 
+/// @brief buffer lowest point temperature
+int ds1Temp = 0;
+/// @brief drying chamber lowest point temperature
+int ds2Temp = 0;
+/// @brief cooling chamber temperature
+int ds3Temp = 0;
+/// @brief Outside air temperature
+int ds4Temp = 0;
+
+uint8_t ds1Address[8];
+uint8_t ds2Address[8];
+uint8_t ds3Address[8];
+uint8_t ds4Address[8];
+
+/// @brief augerInput
+int cap1State = 0;
+/// @brief bufferFull
+int cap2State = 0;
+/// @brief bufferEmpty
+int cap3State = 0;
+/// @brief dryerEmpty
+int cap4State = 0;
+/// @brief blowerFull
+int cap5State = 0;
+/// @brief grainStorageFull
+int cap6State = 0;
+/// @brief heaterActive
+int fotoSensorValue = 0;
+/// @brief heaterTemperature
+int kTypeTemp = 0;
+
+bool heaterState = false;
+bool radialFanState = false;
+bool coolingFanState = false;
+bool augersTurnOnActive = false;
+bool horizontalAugerState = false;
+bool floorAugerState = false;
+bool airBlowerState = false;
+
+TurnOnState fillingAugersState = TurnOnState::Stopped;
+TurnOnState heatingState = TurnOnState::Stopped;
+TurnOnState floorAugerState = TurnOnState::Stopped;
+
+unsigned long augerTurnOnTime = 0;
+unsigned long horizontalAugerTurnOnTime = 0;
+unsigned long radialFanTurnOnTime = 0;
+
+bool start = false;
+DryingProcess currentProcessStage = DryingProcess::Nothing;
+
+enum TurnOnState
+{
+  Cranking,
+  Running,
+  Stopping,
+  Stopped,
+};
+
+enum DryingProcess
+{
+  Nothing,
+  Loading,
+  Starting,
+  Drying,
+  Cooling,
+  Unloading
+};
+
 void ReceiveDataFromSlave();
 void SendCommandToSlave();
 void ParseMessage(uint8_t *message, int length);
+void Start();
+void StartDrying();
+void TurnOnAuger();
+void CheckIfDryerIsFull();
+void TurnOnHeater();
+void TurnOnCoolingFan();
+void Drying();
 
 void setup()
 {
+  pinMode(augerPin, OUTPUT);
+  pinMode(horizontalAugerPin, OUTPUT);
+  pinMode(radialFanPin, OUTPUT);
+  pinMode(heaterPin, OUTPUT);
+  pinMode(coolingFanPin, OUTPUT);
+  pinMode(floorAugerPin, OUTPUT);
+  pinMode(airBlowerPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  nexDisplay.begin(9600);
+  delay(500);
+  nexDisplay.writeStr("page 0");
   lastCommandSent = millis();
 }
 
 void loop()
 {
-  if(millis() - commandInterval > lastCommandSent) {
+  if(start)
+    Start();
+
+  if(millis() - COMMAND_INTERVAL_TIME_MS > lastCommandSent) {
     SendCommandToSlave();
   }
 
   ReceiveDataFromSlave();
+}
+
+void Start()
+{
+  switch (currentProcessStage)
+  {
+  case DryingProcess::Nothing:
+    break;
+  case DryingProcess::Loading:
+    break;
+  case DryingProcess::Starting:
+    StartDrying();
+    break;
+  case DryingProcess::Drying:
+    Drying();
+    break;
+  case DryingProcess::Cooling:
+    break;
+  case DryingProcess::Unloading:
+    break;
+  default:
+    break;
+  }
+}
+
+void Drying()
+{
+  
+}
+
+void StartDrying()
+{
+  if(cap3State == 0)
+  {
+    TurnOnAuger();
+  }
+
+  if(fillingAugersState == TurnOnState::Cranking && (millis() - augerTurnOnTime > SOFT_START_DELAY_MS))
+  {
+    digitalWrite(horizontalAugerPin, HIGH);
+    horizontalAugerState = true;
+    horizontalAugerTurnOnTime = millis();
+    fillingAugersState = TurnOnState::Running;
+  }
+
+  if(cap3State == 1 && (millis() - horizontalAugerTurnOnTime > SOFT_START_DELAY_MS))
+  {
+    TurnOnHeater();
+  }
+
+  if(cap4State == 1)
+  {
+    TurnOnCoolingFan();
+  }
+
+  CheckIfDryerIsFull();
+}
+
+void TurnOnCoolingFan()
+{
+  digitalWrite(coolingFanPin, HIGH);
+  coolingFanState = true;
+}
+
+void TurnOnHeater()
+{
+  digitalWrite(radialFanPin, HIGH);
+  radialFanState = true;
+  digitalWrite(heaterPin, HIGH);
+  heaterState = true;
+  radialFanTurnOnTime = millis();
+  heatingState = TurnOnState::Running;
+}
+
+void TurnOnAuger()
+{
+  digitalWrite(augerPin, HIGH);
+  // augersTurnOnActive = true;
+  fillingAugersState = TurnOnState::Cranking;
+  augerTurnOnTime = millis();
+}
+
+void CheckIfDryerIsFull()
+{
+  if(cap2State == 1)
+  {
+    digitalWrite(augerPin, LOW);
+    // augersTurnOnActive = false;
+    digitalWrite(horizontalAugerPin, LOW);
+    // horizontalAugerState = false;
+    fillingAugersState = TurnOnState::Stopped;
+    currentProcessStage = DryingProcess::Drying;
+  }
 }
 
 void ReceiveDataFromSlave()
