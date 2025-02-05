@@ -17,6 +17,7 @@ int cap3Pin = 4; // Capacitive Sensor 3
 int cap4Pin = 5; // Capacitive Sensor 4
 int cap5Pin = 6; // Capacitive Sensor 5
 int cap6Pin = 7; // Capacitive Sensor 6
+int cap7Pin = 13; // Capacitive Sensor 7
 
 int RX_PIN = 9;  // Software Serial RX -> MAX485 RO
 int TX_PIN = 11; // Software Serial TX -> MAX485 DI
@@ -50,6 +51,7 @@ int cap3State = 0;
 int cap4State = 0;
 int cap5State = 0;
 int cap6State = 0;
+int cap7State = 0;
 
 int fotoSensorValue = 0;
 int kTypeTemp = 0;
@@ -84,6 +86,7 @@ void loop()
   cap4State = digitalRead(cap4Pin);
   cap5State = digitalRead(cap5Pin);
   cap6State = digitalRead(cap6Pin);
+  cap7State = digitalRead(cap7Pin);
   fotoSensorValue = analogRead(fotoSensorPin);
 
   if (temperatureLastReadout + temperatureReadoutInterval < millis())
@@ -197,6 +200,8 @@ void CreateReply()
   rs485Serial.write(static_cast<uint8_t>(cap5State == HIGH ? 1 : 0));
   rs485Serial.write(static_cast<uint8_t>(0xC6));
   rs485Serial.write(static_cast<uint8_t>(cap6State == HIGH ? 1 : 0));
+  rs485Serial.write(static_cast<uint8_t>(0xC7));
+  rs485Serial.write(static_cast<uint8_t>(cap7State == HIGH ? 1 : 0));
 
   rs485Serial.write(static_cast<uint8_t>(0xF1));
   rs485Serial.write(static_cast<uint8_t>(fotoSensorValue));
