@@ -23,6 +23,8 @@ unsigned long lastCommandSent;
 unsigned long COMMAND_INTERVAL_TIME_MS = 1000;   // 1 second
 unsigned long const SOFT_START_DELAY_MS = 10000; // 10 seconds
 unsigned long const FLOOR_TO_BLOWER_TURN__OFF_DELAY = 30000; // 30 seconds
+
+// TODO: store it in 2 separe bytes in ROM
 int const MINIMUM_TEMP_OFFSET = 5;
 int const MAXIMUM_TEMP_OFFSET = 5;
 
@@ -63,7 +65,7 @@ int cap4State = 0;
 int cap5State = 0;
 /// @brief coolingTankFull - this is indicator that cooling tank is full and cooling fan can be running
 int cap6State = 0;
-/// @brief grainStorageFull - tjos sensor is located at the top of grain bin,
+/// @brief grainStorageFull - this sensor is located at the top of grain bin,
 int cap7State = 0;
 /// @brief heaterActive
 int fotoSensorValue = 0;
@@ -77,6 +79,7 @@ bool augersTurnOnActive = false;
 bool horizontalAugerState = false;
 bool floorAugerState = false;
 bool airBlowerState = false;
+bool buzzerState = false;
 
 TurnOnState fillingAugersState = TurnOnState::Stopped;
 TurnOnState heatingState = TurnOnState::Stopped;
@@ -91,6 +94,9 @@ unsigned long floorAugerTurnOffTime = 0;
 
 bool start = false;
 DryingProcess currentProcessStage = DryingProcess::Nothing;
+bool EmptyWholeDryer = false;
+unsigned long TimeEmptySensorTriggered = 0;
+unsigned long BuzzerTurnTime = 0;
 
 enum TurnOnState
 {
@@ -106,14 +112,16 @@ enum DryingProcess
   Loading,
   Drying,
   Cooling,
-  Unloading
+  Unloading,
+  ShutDown,
+  Error,
 };
 
 void ReceiveDataFromSlave();
 void SendCommandToSlave();
 void ParseMessage(uint8_t *message, int length);
 void Start();
-void Drying();
+void Dry();
 void TurnOnAuger();
 void CheckIfBufferIsFull();
 void TurnOnHeater();
@@ -121,6 +129,10 @@ void TurnOnCoolingFan();
 void CheckIfBufferIsEmpty();
 void RemoveCorn();
 void StopRemovingCorn();
+bool CheckLastTurnOnTime();
+void Unload();
+void ShutDown();
+void SignalError();
 
 void setup()
 {
@@ -160,40 +172,133 @@ void Start()
   case DryingProcess::Loading:
     break;
   case DryingProcess::Drying:
-    Drying();
+    Dry();
     break;
   case DryingProcess::Cooling:
     break;
   case DryingProcess::Unloading:
+    Unload();
+    break;
+  case DryingProcess::ShutDown:
+    ShutDown();
+    SignalEndOfProcess();
+    break;
+  case DryingProcess::Error:
+    ShutDown();
+    SignalError();
     break;
   default:
     break;
   }
 }
 
-void Drying()
+void SignalEndOfProcess()
+{
+  if(!buzzerState && (millis() - BuzzerTurnTime > 30000))
+  {
+    digitalWrite(buzzerPin, HIGH);
+    BuzzerTurnTime = millis();
+    buzzerState = true;
+  }
+  else if(buzzerState && (millis() - BuzzerTurnTime > 5000))
+  {
+    digitalWrite(buzzerPin, LOW);
+    buzzerState = false;
+    BuzzerTurnTime = millis();
+  }
+}
+
+void SignalError()
+{
+  if(!buzzerState && (millis() - BuzzerTurnTime > 5000))
+  {
+    digitalWrite(buzzerPin, HIGH);
+    BuzzerTurnTime = millis();
+    buzzerState = true;
+  }
+  else if(buzzerState && (millis() - BuzzerTurnTime > 5000))
+  {
+    digitalWrite(buzzerPin, LOW);
+    buzzerState = false;
+    BuzzerTurnTime = millis();
+  }
+}
+
+void ShutDown()
+{
+  digitalWrite(augerPin, LOW);
+  digitalWrite(horizontalAugerPin, LOW);
+  digitalWrite(radialFanPin, LOW);
+  digitalWrite(heaterPin, LOW);
+  digitalWrite(coolingFanPin, LOW);
+  digitalWrite(floorAugerPin, LOW);
+  digitalWrite(airBlowerPin, LOW);
+}
+
+void Unload()
+{
+  if (cap5State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
+    TurnOnCoolingFan();
+
+  if (cap5State && (ds3Temp == ds4Temp) && CheckLastTurnOnTime())
+  {
+    digitalWrite(coolingFanPin, LOW);
+    coolingFanState = false;
+  }
+
+  if(!EmptyWholeDryer)
+  {
+    if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && !cap7State && cap6State)
+      RemoveCorn();
+    else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State || !cap6State )
+      StopRemovingCorn();
+    return;
+  }
+
+  if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && !cap7State && cap4State)
+      RemoveCorn();
+  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State)
+    StopRemovingCorn();
+  else if(!cap4State && (millis() - TimeEmptySensorTriggered > 30000))
+  {
+    StopRemovingCorn();
+    currentProcessStage = DryingProcess::ShutDown;
+  }
+}
+
+void Dry()
 {
   CheckIfBufferIsFull();
   CheckIfBufferIsEmpty();
 
-  if (cap3State && (millis() - horizontalAugerTurnOnTime > SOFT_START_DELAY_MS))
-  {
+  if (cap3State && CheckLastTurnOnTime())
     TurnOnHeater();
-  }
 
-  if (cap5State && heaterState && (millis() - radialFanTurnOnTime > SOFT_START_DELAY_MS))
-  {
+
+  if (cap5State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
     TurnOnCoolingFan();
+
+  if (cap5State && (ds3Temp == ds4Temp) && CheckLastTurnOnTime())
+  {
+    digitalWrite(coolingFanPin, LOW);
+    coolingFanState = false;
   }
 
-  if ((ds3Temp - MINIMUM_TEMP_OFFSET) <= ds4Temp)
-  {
+  if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && cap3State && !cap7State)
     RemoveCorn();
-  }
-  else if ((ds3Temp - MAXIMUM_TEMP_OFFSET) >= ds4Temp)
-  {
+  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State || !cap3State )
     StopRemovingCorn();
-  }
+}
+
+bool CheckLastTurnOnTime()
+{
+  if((millis() - augerTurnOnTime) > SOFT_START_DELAY_MS
+  && (millis() - horizontalAugerTurnOnTime) > SOFT_START_DELAY_MS 
+  && (millis() - radialFanTurnOnTime) > SOFT_START_DELAY_MS
+  && (millis() - airBlowerTurnOnTime) > SOFT_START_DELAY_MS)
+    return true;
+  
+  return false;
 }
 
 void StopRemovingCorn()
@@ -219,7 +324,7 @@ void RemoveCorn()
     airBlowerState = true;
     airBlowerTurnOnTime = millis();
   }
-  if (!cap5State && airBlowerState && (millis() - airBlowerTurnOnTime > SOFT_START_DELAY_MS))
+  if (!cap5State && airBlowerState && CheckLastTurnOnTime())
   {
     digitalWrite(floorAugerPin, HIGH);
     floorAugerState = true;
@@ -341,6 +446,9 @@ void ParseMessage(uint8_t *message, int length)
       cap3State = value;
       break;
     case 0xC4:
+      if(cap4State && value == 0)
+        TimeEmptySensorTriggered = millis();
+      
       cap4State = value;
       break;
     case 0xC5:
