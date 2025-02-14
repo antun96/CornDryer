@@ -75,7 +75,7 @@ int kTypeTemp = 0;
 bool heaterState = false;
 bool radialFanState = false;
 bool coolingFanState = false;
-bool augersTurnOnActive = false;
+bool augersState = false;
 bool horizontalAugerState = false;
 bool floorAugerState = false;
 bool airBlowerState = false;
@@ -92,11 +92,20 @@ unsigned long airBlowerTurnOnTime = 0;
 unsigned long floorAugerTurnOffTime = 0;
 
 
-bool start = false;
 DryingProcess currentProcessStage = DryingProcess::Nothing;
+Pages currentPage = Pages::Start;
+bool start = false;
 bool EmptyWholeDryer = false;
+bool heaterAutoMode = true;
+bool augerAutoMode = true;
+bool blowerAutoMode = true;
 unsigned long TimeEmptySensorTriggered = 0;
 unsigned long BuzzerTurnTime = 0;
+
+int maxGrainTemp = 0;
+int maxHeaterTemp = 0;
+int minTempDiff = 0;
+int maxTempDiff = 0;
 
 enum TurnOnState
 {
@@ -109,12 +118,17 @@ enum TurnOnState
 enum DryingProcess
 {
   Nothing,
-  Loading,
   Drying,
-  Cooling,
   Unloading,
   ShutDown,
   Error,
+};
+
+enum Pages
+{
+  Start,
+  Drying,
+  Settings,
 };
 
 void ReceiveDataFromSlave();
@@ -133,6 +147,14 @@ bool CheckLastTurnOnTime();
 void Unload();
 void ShutDown();
 void SignalError();
+void UpdateScreen();
+
+/// @brief Start button is pressed, dryer proccess started
+void trigger0();
+/// @brief End button is pressed, dryer proccess ended
+void trigger1();
+/// @brief Settings button is pressed
+void trigger2();
 
 void setup()
 {
@@ -161,6 +183,8 @@ void loop()
   }
 
   ReceiveDataFromSlave();
+
+  UpdateScreen();
 }
 
 void Start()
@@ -169,12 +193,8 @@ void Start()
   {
   case DryingProcess::Nothing:
     break;
-  case DryingProcess::Loading:
-    break;
   case DryingProcess::Drying:
     Dry();
-    break;
-  case DryingProcess::Cooling:
     break;
   case DryingProcess::Unloading:
     Unload();
@@ -350,7 +370,7 @@ void TurnOnHeater()
 void TurnOnAuger()
 {
   digitalWrite(augerPin, HIGH);
-  // augersTurnOnActive = true;
+  augersState = true;
   fillingAugersState = TurnOnState::Cranking;
   augerTurnOnTime = millis();
 }
@@ -376,9 +396,9 @@ void CheckIfBufferIsFull()
   if (cap2State)
   {
     digitalWrite(augerPin, LOW);
-    // augersTurnOnActive = false;
+    augersState = false;
     digitalWrite(horizontalAugerPin, LOW);
-    // horizontalAugerState = false;
+    horizontalAugerState = false;
     fillingAugersState = TurnOnState::Stopped;
   }
 }
@@ -471,4 +491,91 @@ void ParseMessage(uint8_t *message, int length)
       break;
     }
   }
+}
+
+void UpdateScreen()
+{
+  switch (currentPage)
+  {
+    case Pages::Drying:
+    UpdateDryingPage();
+    break;
+    case Pages::Settings:
+    UpdateSettingsPage();
+    break;
+    case Pages::Start:
+    default:
+      break;
+  }
+}
+
+void UpdateDryingPage()
+{
+  nexDisplay.writeStr("inputAuger.picc", cap1State ? "2" : "1");
+  nexDisplay.writeStr("augerMotor.picc", augersState ? "2" : "1");
+  nexDisplay.writeStr("horizAuger.picc", horizontalAugerState ? "2" : "1");
+  nexDisplay.writeStr("bufferFull.picc", cap2State ? "2" : "1");
+  nexDisplay.writeStr("bufferEmpty.picc", cap3State ? "2" : "1");
+  nexDisplay.writeStr("radialFan.picc", radialFanState ? "2" : "1");
+  nexDisplay.writeStr("heater.picc", heaterState ? "2" : "1");
+  nexDisplay.writeStr("coolingFan.picc", coolingFanState ? "2" : "1");
+  nexDisplay.writeStr("coolChambFull.picc", cap6State ? "2" : "1");
+  nexDisplay.writeStr("dryerEmpty.picc", cap4State ? "2" : "1");
+  nexDisplay.writeStr("floorAuger.picc", floorAugerState ? "2" : "1");
+  // reverse logic
+  nexDisplay.writeStr("blowerFull.picc", cap5State ? "1" : "2");
+  nexDisplay.writeStr("blowerMotor.picc", airBlowerState ? "2" : "1");
+  // reverse logic
+  nexDisplay.writeStr("binFull.picc", airBlowerState ? "2" : "1");
+
+  nexDisplay.writeStr("heatUpTemp.txt", String(ds1Temp));
+  nexDisplay.writeStr("heatDownTemp.txt", String(ds2Temp));
+  nexDisplay.writeStr("coolGrainTemp.txt", String(ds3Temp));
+  nexDisplay.writeStr("outsideTemp.txt", String(ds4Temp));  
+
+  if(heaterAutoMode)
+    nexDisplay.writeStr("heaterMode.txt", "Auto");
+  else
+    nexDisplay.writeStr("heaterMode.txt", "Cool");
+
+  if(augerAutoMode)
+    nexDisplay.writeStr("augerMode.txt", "Auto");
+  else
+    nexDisplay.writeStr("augerMode.txt", "Manual");
+  
+  if(blowerAutoMode)
+    nexDisplay.writeStr("blowerMode.txt", "Auto");
+  else
+    nexDisplay.writeStr("blowerMode.txt", "Manual");
+}
+
+void UpdateSettingsPage()
+{
+  nexDisplay.writeStr("maxGrainTemp.txt", String(maxGrainTemp));
+  nexDisplay.writeStr("maxHeaterTemp.txt", String(maxHeaterTemp));
+  nexDisplay.writeStr("minTempDiff.txt", String(minTempDiff));
+  nexDisplay.writeStr("maxTempDiff.txt", String(maxTempDiff));
+  if(EmptyWholeDryer)
+    nexDisplay.writeStr("emptyWholeDryer.txt", "Cijelu");
+  else
+    nexDisplay.writeStr("emptyWholeDryer.txt", "Samo gore");
+}
+
+void trigger0()
+{
+  currentProcessStage = DryingProcess::Drying;
+  start = true;
+  currentPage = Pages::Drying;
+}
+void trigger1()
+{
+  currentProcessStage = DryingProcess::Unloading;
+  start = false;
+  currentPage = Pages::Start;
+}
+void trigger2()
+{
+  currentProcessStage = DryingProcess::Unloading;
+  start = false;
+  currentPage = Pages::Settings;
 }
