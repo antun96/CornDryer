@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SoftwareSerial.h>
-#include "EasyNextionLibrary.h" // Include EasyNextionLibrary
+#include "EasyNextionLibrary.h"
+#include <EEPROM.h>
 
 /// @brief Pin for turning auger on/off
 int augerPin = A0;
@@ -19,9 +20,17 @@ int airBlowerPin = A6;
 /// @brief Pin for turning buzzer on/off
 int buzzerPin = A7;
 
+int maxGrainTempAddress = 0;
+int maxHeaterTempAddress = 1;
+int minTempDiffAddress = 2;
+int maxTempDiffAddress = 3;
+int emptyWholeDryerAddress = 4;
+int heaterAutoModeAddress = 5;
+int augerAutoModeAddress = 6;
+
 unsigned long lastCommandSent;
-unsigned long COMMAND_INTERVAL_TIME_MS = 1000;   // 1 second
-unsigned long const SOFT_START_DELAY_MS = 10000; // 10 seconds
+unsigned long COMMAND_INTERVAL_TIME_MS = 1000;               // 1 second
+unsigned long const SOFT_START_DELAY_MS = 10000;             // 10 seconds
 unsigned long const FLOOR_TO_BLOWER_TURN__OFF_DELAY = 30000; // 30 seconds
 
 // TODO: store it in 2 separe bytes in ROM
@@ -91,14 +100,14 @@ unsigned long radialFanTurnOnTime = 0;
 unsigned long airBlowerTurnOnTime = 0;
 unsigned long floorAugerTurnOffTime = 0;
 
-
 DryingProcess currentProcessStage = DryingProcess::Nothing;
 Pages currentPage = Pages::Start;
 bool start = false;
-bool EmptyWholeDryer = false;
+bool emptyWholeDryer = false;
 bool heaterAutoMode = true;
 bool augerAutoMode = true;
 bool blowerAutoMode = true;
+// TODO: implement this, to whut down blower some time after this is triggered
 unsigned long TimeEmptySensorTriggered = 0;
 unsigned long BuzzerTurnTime = 0;
 
@@ -137,10 +146,8 @@ void ParseMessage(uint8_t *message, int length);
 void Start();
 void Dry();
 void TurnOnAuger();
-void CheckIfBufferIsFull();
 void TurnOnHeater();
 void TurnOnCoolingFan();
-void CheckIfBufferIsEmpty();
 void RemoveCorn();
 void StopRemovingCorn();
 bool CheckLastTurnOnTime();
@@ -167,9 +174,15 @@ void setup()
   pinMode(airBlowerPin, OUTPUT);
   pinMode(buzzerPin, OUTPUT);
   nexDisplay.begin(9600);
-  delay(500);
-  nexDisplay.writeStr("page 0");
   lastCommandSent = millis();
+  maxGrainTemp = EEPROM.read(maxGrainTempAddress);
+  maxHeaterTemp = EEPROM.read(maxHeaterTempAddress);
+  minTempDiff = EEPROM.read(minTempDiffAddress);
+  maxTempDiff = EEPROM.read(maxTempDiffAddress);
+
+  emptyWholeDryer = EEPROM.read(emptyWholeDryerAddress) ? true : false;
+  heaterAutoMode = EEPROM.read(heaterAutoModeAddress) ? true : false;
+  augerAutoMode = EEPROM.read(augerAutoModeAddress) ? true : false;
 }
 
 void loop()
@@ -214,13 +227,13 @@ void Start()
 
 void SignalEndOfProcess()
 {
-  if(!buzzerState && (millis() - BuzzerTurnTime > 30000))
+  if (!buzzerState && (millis() - BuzzerTurnTime > 30000))
   {
     digitalWrite(buzzerPin, HIGH);
     BuzzerTurnTime = millis();
     buzzerState = true;
   }
-  else if(buzzerState && (millis() - BuzzerTurnTime > 5000))
+  else if (buzzerState && (millis() - BuzzerTurnTime > 5000))
   {
     digitalWrite(buzzerPin, LOW);
     buzzerState = false;
@@ -230,13 +243,13 @@ void SignalEndOfProcess()
 
 void SignalError()
 {
-  if(!buzzerState && (millis() - BuzzerTurnTime > 5000))
+  if (!buzzerState && (millis() - BuzzerTurnTime > 5000))
   {
     digitalWrite(buzzerPin, HIGH);
     BuzzerTurnTime = millis();
     buzzerState = true;
   }
-  else if(buzzerState && (millis() - BuzzerTurnTime > 5000))
+  else if (buzzerState && (millis() - BuzzerTurnTime > 5000))
   {
     digitalWrite(buzzerPin, LOW);
     buzzerState = false;
@@ -255,6 +268,7 @@ void ShutDown()
   digitalWrite(airBlowerPin, LOW);
 }
 
+// TODO: add ending check to shutdown
 void Unload()
 {
   if (cap5State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
@@ -266,34 +280,26 @@ void Unload()
     coolingFanState = false;
   }
 
-  if(!EmptyWholeDryer)
-  {
-    if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && !cap7State && cap6State)
+  if ((ds3Temp + MINIMUM_TEMP_OFFSET) < ds4Temp && ds2Temp >= maxGrainTemp && CheckEmptyWholeDryer())
       RemoveCorn();
-    else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State || !cap6State )
-      StopRemovingCorn();
-    return;
-  }
-
-  if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && !cap7State && cap4State)
-      RemoveCorn();
-  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State)
+  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || ds2Temp < maxGrainTemp || !CheckEmptyWholeDryer())
     StopRemovingCorn();
-  else if(!cap4State && (millis() - TimeEmptySensorTriggered > 30000))
-  {
-    StopRemovingCorn();
-    currentProcessStage = DryingProcess::ShutDown;
-  }
 }
 
+// add ending check when auger sensor is empty, and full buffer sensor is empty and temperature on upper part is reached max grain temp 
+// - cool, empty warm chamber and shutdown
 void Dry()
 {
-  CheckIfBufferIsFull();
-  CheckIfBufferIsEmpty();
+  if (cap2State || !augerAutoMode)
+    StopLoadingGrain();
+  else if (!cap3State && augerAutoMode)
+    LoadGrain();
 
-  if (cap3State && CheckLastTurnOnTime())
+  if (cap3State && CheckLastTurnOnTime() && kTypeTemp < maxHeaterTemp && heaterAutoMode)
     TurnOnHeater();
 
+  if (kTypeTemp > maxHeaterTemp || !heaterAutoMode)
+    TurnOffHeater();
 
   if (cap5State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
     TurnOnCoolingFan();
@@ -304,18 +310,35 @@ void Dry()
     coolingFanState = false;
   }
 
-  if ((ds3Temp + MINIMUM_TEMP_OFFSET) <= ds4Temp && cap3State && !cap7State)
+
+  if(cap5State && !blowerFull)
+  {
+    blowerFull = true;
+    blowerFullTime = millis();
+  }
+
+  if(blowerFull && (millis() - blowerFullTime > 30000))
+  {
+    currentProcessStage = DryingProcess::Error;
+  }
+
+  if ((ds3Temp + MINIMUM_TEMP_OFFSET) < ds4Temp && ds2Temp >= maxGrainTemp && CheckEmptyWholeDryer())
     RemoveCorn();
-  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || cap7State || !cap3State )
+  else if ((ds3Temp + MAXIMUM_TEMP_OFFSET) >= ds4Temp || ds2Temp < maxGrainTemp || !CheckEmptyWholeDryer())
     StopRemovingCorn();
+}
+
+bool CheckEmptyWholeDryer()
+{
+  if (emptyWholeDryer)
+    return true;
+  if (!emptyWholeDryer && !cap6State)
+    return false;
 }
 
 bool CheckLastTurnOnTime()
 {
-  if((millis() - augerTurnOnTime) > SOFT_START_DELAY_MS
-  && (millis() - horizontalAugerTurnOnTime) > SOFT_START_DELAY_MS 
-  && (millis() - radialFanTurnOnTime) > SOFT_START_DELAY_MS
-  && (millis() - airBlowerTurnOnTime) > SOFT_START_DELAY_MS)
+  if ((millis() - augerTurnOnTime) > SOFT_START_DELAY_MS && (millis() - horizontalAugerTurnOnTime) > SOFT_START_DELAY_MS && (millis() - radialFanTurnOnTime) > SOFT_START_DELAY_MS && (millis() - airBlowerTurnOnTime) > SOFT_START_DELAY_MS)
     return true;
   
   return false;
@@ -336,15 +359,14 @@ void StopRemovingCorn()
   }
 }
 
+// TODO: fix this
 void RemoveCorn()
-{
-  if (!cap5State)
   {
     digitalWrite(airBlowerPin, HIGH);
     airBlowerState = true;
     airBlowerTurnOnTime = millis();
-  }
-  if (!cap5State && airBlowerState && CheckLastTurnOnTime())
+
+  if (airBlowerState && CheckLastTurnOnTime())
   {
     digitalWrite(floorAugerPin, HIGH);
     floorAugerState = true;
@@ -367,6 +389,13 @@ void TurnOnHeater()
   heatingState = TurnOnState::Running;
 }
 
+void TurnOffHeater()
+{
+  digitalWrite(heaterPin, LOW);
+  heaterState = false;
+  heatingState = TurnOnState::Cooling;
+}
+
 void TurnOnAuger()
 {
   digitalWrite(augerPin, HIGH);
@@ -375,32 +404,25 @@ void TurnOnAuger()
   augerTurnOnTime = millis();
 }
 
-void CheckIfBufferIsEmpty()
-{
-  if (!cap3State)
+void LoadGrain()
   {
     TurnOnAuger();
-
     if (fillingAugersState == TurnOnState::Cranking && (millis() - augerTurnOnTime > SOFT_START_DELAY_MS))
     {
       digitalWrite(horizontalAugerPin, HIGH);
       horizontalAugerState = true;
       horizontalAugerTurnOnTime = millis();
       fillingAugersState = TurnOnState::Running;
-    }
   }
 }
 
-void CheckIfBufferIsFull()
-{
-  if (cap2State)
+void StopLoadingGrain()
   {
     digitalWrite(augerPin, LOW);
     augersState = false;
     digitalWrite(horizontalAugerPin, LOW);
     horizontalAugerState = false;
     fillingAugersState = TurnOnState::Stopped;
-  }
 }
 
 void ReceiveDataFromSlave()
@@ -466,7 +488,7 @@ void ParseMessage(uint8_t *message, int length)
       cap3State = value;
       break;
     case 0xC4:
-      if(cap4State && value == 0)
+      if (cap4State && value == 0)
         TimeEmptySensorTriggered = millis();
       
       cap4State = value;
@@ -533,18 +555,18 @@ void UpdateDryingPage()
   nexDisplay.writeStr("coolGrainTemp.txt", String(ds3Temp));
   nexDisplay.writeStr("outsideTemp.txt", String(ds4Temp));  
 
-  if(heaterAutoMode)
+  if (heaterAutoMode)
     nexDisplay.writeStr("heaterMode.txt", "Auto");
   else
     nexDisplay.writeStr("heaterMode.txt", "Cool");
 
-  if(augerAutoMode)
+  if (augerAutoMode)
     nexDisplay.writeStr("augerMode.txt", "Auto");
   else
     nexDisplay.writeStr("augerMode.txt", "Manual");
   
-  if(blowerAutoMode)
-    nexDisplay.writeStr("blowerMode.txt", "Auto");
+  if (emptyWholeDryer)
+    nexDisplay.writeStr("blowerMode.txt", "True");
   else
     nexDisplay.writeStr("blowerMode.txt", "Manual");
 }
@@ -555,27 +577,133 @@ void UpdateSettingsPage()
   nexDisplay.writeStr("maxHeaterTemp.txt", String(maxHeaterTemp));
   nexDisplay.writeStr("minTempDiff.txt", String(minTempDiff));
   nexDisplay.writeStr("maxTempDiff.txt", String(maxTempDiff));
-  if(EmptyWholeDryer)
-    nexDisplay.writeStr("emptyWholeDryer.txt", "Cijelu");
+  if (emptyWholeDryer)
+    nexDisplay.writeStr("emptyWholeDryer.txt", "True");
   else
-    nexDisplay.writeStr("emptyWholeDryer.txt", "Samo gore");
+    nexDisplay.writeStr("emptyWholeDryer.txt", "Manual");
 }
 
+/// @brief Start button is pressed, dryer proccess started
 void trigger0()
 {
   currentProcessStage = DryingProcess::Drying;
   start = true;
   currentPage = Pages::Drying;
 }
+
+/// @brief End button is pressed, dryer proccess ended
 void trigger1()
 {
   currentProcessStage = DryingProcess::Unloading;
   start = false;
   currentPage = Pages::Start;
 }
+
+/// @brief Settings button is pressed
 void trigger2()
 {
-  currentProcessStage = DryingProcess::Unloading;
-  start = false;
   currentPage = Pages::Settings;
+}
+
+/// @brief Return to drying screen from settings
+void trigger3()
+{
+  currentPage = Pages::Drying;
+}
+
+/// @brief Lower max grain temperature
+void trigger4()
+{
+  maxGrainTemp--;
+  EEPROM.write(maxGrainTempAddress, maxGrainTemp);
+  nexDisplay.writeStr("maxGrainTemp.txt", String(maxGrainTemp));
+}
+
+/// @brief Increase max grain temperature
+void trigger5()
+{
+  maxGrainTemp++;
+  EEPROM.write(maxGrainTempAddress, maxGrainTemp);
+  nexDisplay.writeStr("maxGrainTemp.txt", String(maxGrainTemp));
+}
+
+/// @brief Lower max heater temperature
+void trigger6()
+{
+  maxHeaterTemp--;
+  EEPROM.write(maxHeaterTempAddress, maxHeaterTemp);
+  nexDisplay.writeStr("maxHeaterTemp.txt", String(maxHeaterTemp));
+}
+
+/// @brief Increase max heater temperature
+void trigger7()
+{
+  maxHeaterTemp++;
+  EEPROM.write(maxHeaterTempAddress, maxHeaterTemp);
+  nexDisplay.writeStr("maxHeaterTemp.txt", String(maxHeaterTemp));
+}
+
+/// @brief Lower min temperature difference
+void trigger8()
+{
+  minTempDiff--;
+  EEPROM.write(minTempDiffAddress, minTempDiff);
+  nexDisplay.writeStr("minTempDiff.txt", String(minTempDiff));
+}
+
+/// @brief Increase min temperature difference
+void trigger9()
+{
+  minTempDiff++;
+  EEPROM.write(minTempDiffAddress, minTempDiff);
+  nexDisplay.writeStr("minTempDiff.txt", String(minTempDiff));
+}
+
+/// @brief Lower max temperature difference
+void trigger10()
+{
+  maxTempDiff--;
+  EEPROM.write(maxTempDiffAddress, maxTempDiff);
+  nexDisplay.writeStr("maxTempDiff.txt", String(maxTempDiff));
+}
+
+/// @brief Increase max temperature difference
+void trigger11()
+{
+  maxTempDiff++;
+  EEPROM.write(maxTempDiffAddress, maxTempDiff);
+  nexDisplay.writeStr("maxTempDiff.txt", String(maxTempDiff));
+}
+
+/// @brief Change empty whole dryer mode
+void trigger12()
+{
+  emptyWholeDryer = !emptyWholeDryer;
+  EEPROM.write(emptyWholeDryerAddress, emptyWholeDryer);
+  if (emptyWholeDryer)
+    nexDisplay.writeStr("unloadMode.txt", "True");
+  else
+    nexDisplay.writeStr("unloadMode.txt", "Manual");
+}
+
+/// @brief Change auger mode
+void trigger13()
+{
+  augerAutoMode = !augerAutoMode;
+  EEPROM.write(augerAutoModeAddress, augerAutoMode);
+  if (augerAutoMode)
+    nexDisplay.writeStr("autoAugerFill.txt", "Auto");
+  else
+    nexDisplay.writeStr("autoAugerFill.txt", "Manual");
+}
+
+/// @brief Change heater mode
+void trigger14()
+{
+  heaterAutoMode = !heaterAutoMode;
+  EEPROM.write(heaterAutoModeAddress, heaterAutoMode);
+  if (heaterAutoMode)
+    nexDisplay.writeStr("heaterMode.txt", "Auto");
+  else
+    nexDisplay.writeStr("heaterMode.txt", "Cool");
 }
