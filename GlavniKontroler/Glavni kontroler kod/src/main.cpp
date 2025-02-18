@@ -290,34 +290,30 @@ void Unload()
 // - cool, empty warm chamber and shutdown
 void Dry()
 {
-  if (cap2State || !augerAutoMode)
+  if (!cap1State || cap2State || !augerAutoMode)
     StopLoadingGrain();
-  else if (!cap3State && augerAutoMode)
+  else if (cap1State && !cap3State && augerAutoMode)
     LoadGrain();
 
   if (cap3State && CheckLastTurnOnTime() && kTypeTemp < maxHeaterTemp && heaterAutoMode)
     TurnOnHeater();
 
-  if (kTypeTemp > maxHeaterTemp || !heaterAutoMode)
+  if (!cap3State || kTypeTemp > maxHeaterTemp || !heaterAutoMode)
     TurnOffHeater();
 
-  if (cap5State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
+  if (cap6State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
     TurnOnCoolingFan();
 
-  if (cap5State && (ds3Temp == ds4Temp) && CheckLastTurnOnTime())
-  {
-    digitalWrite(coolingFanPin, LOW);
-    coolingFanState = false;
-  }
+  if (cap6State && (ds3Temp == ds4Temp) && CheckLastTurnOnTime())
+    TurnOffCoolingFan();
 
-
-  if(cap5State && !blowerFull)
+  if (cap5State && !blowerFull)
   {
     blowerFull = true;
     blowerFullTime = millis();
   }
 
-  if(blowerFull && (millis() - blowerFullTime > 30000))
+  if (blowerFull && (millis() - blowerFullTime > 30000))
   {
     currentProcessStage = DryingProcess::Error;
   }
@@ -328,11 +324,25 @@ void Dry()
     StopRemovingCorn();
 }
 
+void TurnOffCoolingFan()
+{
+  digitalWrite(coolingFanPin, LOW);
+  coolingFanState = false;
+}
+
 bool CheckEmptyWholeDryer()
 {
+  if(cap7State)
+    return false;
+
   if (emptyWholeDryer)
     return true;
+
   if (!emptyWholeDryer && !cap6State)
+  {
+    currentProcessStage = DryingProcess::ShutDown;
+    return false;
+  }
     return false;
 }
 
