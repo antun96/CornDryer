@@ -28,6 +28,18 @@ int emptyWholeDryerAddress = 4;
 int heaterAutoModeAddress = 5;
 int augerAutoModeAddress = 6;
 
+int maxGrainTemp = 0;
+int lastSentMaxGrainTemp = 0;
+
+int maxHeaterTemp = 0;
+int lastSentMaxHeaterTemp = 0;
+
+int minTempDiff = 0;
+int lastSentMinTempDiff = 0;
+
+int maxTempDiff = 0;
+int lastSentMaxTempDiff = 0;
+
 unsigned long lastCommandSent;
 unsigned long COMMAND_INTERVAL_TIME_MS = 1000;               // 1 second
 unsigned long const SOFT_START_DELAY_MS = 10000;             // 10 seconds
@@ -48,14 +60,24 @@ int NextionTX = 6; // Nextion TX
 SoftwareSerial nextionSerial(NextionRX, NextionTX);
 EasyNex nexDisplay(nextionSerial);
 
+/// @brief flag for updating page parameters when page is changed
+bool firstTimePageUpdate = false;
+
 /// @brief buffer lowest point temperature
 int ds1Temp = 0;
+int lastDs1Temp = 0;
+
 /// @brief drying chamber lowest point temperature
 int ds2Temp = 0;
+int lastDs2Temp = 0;
+
 /// @brief cooling chamber temperature
 int ds3Temp = 0;
+int lastDs3Temp = 0;
+
 /// @brief Outside air temperature
 int ds4Temp = 0;
+int lastDs4Temp = 0;
 
 uint8_t ds1Address[8];
 uint8_t ds2Address[8];
@@ -64,30 +86,61 @@ uint8_t ds4Address[8];
 
 /// @brief augerInput - if this is 0, auger should be turned off, there is no corn for fill the dryer
 int cap1State = 0;
+int lastCap1State = 0;
+
 /// @brief buffer full, should stop filling it
 int cap2State = 0;
+int lastCap2State = 0;
+
 /// @brief buffer lowest point - if this is 0, buffer is empty - should fill it
 int cap3State = 0;
+int lastCap3State = 0;
+
 /// @brief lowestCapSensorOnDryer - if this is 0, dryer is empty
 int cap4State = 0;
+int lastCap4State = 0;
+
 /// @brief blower full - if this is 0, blower is ok, it is functioning ok
 int cap5State = 0;
+int lastCap5State = 0;
+
 /// @brief coolingTankFull - this is indicator that cooling tank is full and cooling fan can be running
 int cap6State = 0;
+int lastCap6State = 0;
+
 /// @brief grainStorageFull - this sensor is located at the top of grain bin,
 int cap7State = 0;
+int lastCap7State = 0;
+
 /// @brief heaterActive
 int fotoSensorValue = 0;
+int lastFotoSensorValue = 0;
+
 /// @brief heaterTemperature
 int kTypeTemp = 0;
+int lastKTypeTemp = 0;
 
 bool heaterState = false;
+bool lastSentHeaterState = false;
+
 bool radialFanState = false;
+bool lastSentRadialFanState = false;
+
 bool coolingFanState = false;
+bool lastSentCoolingFanState = false;
+
 bool augersState = false;
+bool lastSentAugersState = false;
+
 bool horizontalAugerState = false;
+bool lastSentHorizontalAugerState = false;
+
 bool floorAugerState = false;
+bool lastSentFloorAugerState = false;
+
 bool airBlowerState = false;
+bool lastSentAirBlowerState = false;
+
 bool buzzerState = false;
 
 TurnOnState fillingAugersState = TurnOnState::Stopped;
@@ -104,9 +157,15 @@ DryingProcess currentProcessStage = DryingProcess::Nothing;
 Pages currentPage = Pages::Start;
 bool start = false;
 bool emptyWholeDryer = false;
+bool lastSentEmptyWholeDryer = false;
 bool heaterAutoMode = true;
+
 bool augerAutoMode = true;
+bool lastSentAugerAutoMode = true;
+
 bool blowerAutoMode = true;
+bool lastSentBlowerAutoMode = true;
+
 // TODO: implement this, to whut down blower some time after this is triggered
 unsigned long TimeEmptySensorTriggered = 0;
 unsigned long BuzzerTurnTime = 0;
@@ -122,12 +181,14 @@ enum TurnOnState
   Running,
   Stopping,
   Stopped,
+  Cooling,
 };
 
 enum DryingProcess
 {
   Nothing,
   Drying,
+  DryingWaitToUnlock,
   Unloading,
   ShutDown,
   Error,
@@ -135,9 +196,11 @@ enum DryingProcess
 
 enum Pages
 {
-  Start,
-  Drying,
-  Settings,
+  Start = 0,
+  Drying = 1,
+  Settings = 2,
+  RemoveBlockingPanels = 3,
+  Error = 9,
 };
 
 void ReceiveDataFromSlave();
@@ -209,6 +272,9 @@ void Start()
   case DryingProcess::Drying:
     Dry();
     break;
+  case DryingProcess::DryingWaitToUnlock:
+    WaitToUnlock();
+    break;
   case DryingProcess::Unloading:
     Unload();
     break;
@@ -223,6 +289,24 @@ void Start()
   default:
     break;
   }
+}
+
+void WaitToUnlock()
+{
+  if(!changeScreenSent)
+    ChangePage(Pages::RemoveBlockingPanels);
+
+  if((ds1Temp + MINIMUM_TEMP_OFFSET) < ds4Temp && (ds2Temp + MINIMUM_TEMP_OFFSET) < ds4Temp)
+    ShutDownRadialFan();
+    
+  SignalError();
+}
+
+void ChangePage(int pageId)
+{
+  nexDisplay.writeStr("page ", String(pageId));
+  changeScreenSent = true;
+  currentPage = Pages::RemoveBlockingPanels;
 }
 
 void SignalEndOfProcess()
@@ -301,6 +385,15 @@ void Dry()
   if (!cap3State || kTypeTemp > maxHeaterTemp || !heaterAutoMode)
     TurnOffHeater();
 
+  // passage between drying and cooling chamber is closed, need to heat corn to max temp
+  // then wait for human to open passage
+  if (!cap6State && !cap4State && ds2Temp >= maxGrainTemp && ds1Temp >= maxGrainTemp)
+  {
+    currentProcessStage = DryingProcess::DryingWaitToUnlock;
+    TurnOffHeater();
+    StopLoadingGrain();
+  }
+
   if (cap6State && (ds3Temp + MINIMUM_TEMP_OFFSET > ds4Temp) && CheckLastTurnOnTime())
     TurnOnCoolingFan();
 
@@ -332,7 +425,7 @@ void TurnOffCoolingFan()
 
 bool CheckEmptyWholeDryer()
 {
-  if(cap7State)
+  if (cap7State)
     return false;
 
   if (emptyWholeDryer)
@@ -404,6 +497,12 @@ void TurnOffHeater()
   digitalWrite(heaterPin, LOW);
   heaterState = false;
   heatingState = TurnOnState::Cooling;
+}
+
+void ShutDownRadialFan()
+{
+  digitalWrite(radialFanPin, LOW);
+  radialFanState = false;
 }
 
 void TurnOnAuger()
@@ -530,67 +629,197 @@ void UpdateScreen()
   switch (currentPage)
   {
     case Pages::Drying:
-    UpdateDryingPage();
+    UpdateDryingPage(firstTimePageUpdate);
     break;
     case Pages::Settings:
-    UpdateSettingsPage();
+    UpdateSettingsPage(firstTimePageUpdate);
     break;
     case Pages::Start:
     default:
       break;
   }
+
+  firstTimePageUpdate = false;
 }
 
-void UpdateDryingPage()
+void UpdateDryingPage(bool firstTime = false)
+{
+  if (cap1State != lastCap1State || firstTime)
 {
   nexDisplay.writeStr("inputAuger.picc", cap1State ? "2" : "1");
+    lastCap1State = cap1State;
+  }
+
+  if (augersState != lastSentAugersState || firstTime)
+  {
   nexDisplay.writeStr("augerMotor.picc", augersState ? "2" : "1");
+    lastSentAugersState = augersState;
+  }
+
+  if (horizontalAugerState != lastSentHorizontalAugerState || firstTime)
+  {
   nexDisplay.writeStr("horizAuger.picc", horizontalAugerState ? "2" : "1");
+    lastSentHorizontalAugerState = horizontalAugerState;
+  }
+
+  if (cap2State != lastCap2State || firstTime)
+  {
   nexDisplay.writeStr("bufferFull.picc", cap2State ? "2" : "1");
+    lastCap2State = cap2State;
+  }
+
+  if (cap3State != lastCap3State || firstTime)
+  {
   nexDisplay.writeStr("bufferEmpty.picc", cap3State ? "2" : "1");
+    lastCap3State = cap3State;
+  }
+
+  if (radialFanPin != lastSentRadialFanState || firstTime)
+  {
   nexDisplay.writeStr("radialFan.picc", radialFanState ? "2" : "1");
+    lastSentRadialFanState = radialFanState;
+  }
+
+  if (heaterState != lastSentHeaterState || firstTime)
+  {
   nexDisplay.writeStr("heater.picc", heaterState ? "2" : "1");
+    lastSentHeaterState = heaterState;
+  }
+
+  if (coolingFanState != lastSentCoolingFanState || firstTime)
+  {
   nexDisplay.writeStr("coolingFan.picc", coolingFanState ? "2" : "1");
+    lastSentCoolingFanState = coolingFanState;
+  }
+
+  if (cap6State != lastCap6State || firstTime)
+  {
   nexDisplay.writeStr("coolChambFull.picc", cap6State ? "2" : "1");
+    lastCap6State = cap6State;
+  }
+
+  if (cap4State != lastCap4State || firstTime)
+  {
   nexDisplay.writeStr("dryerEmpty.picc", cap4State ? "2" : "1");
+    lastCap4State = cap4State;
+  }
+
+  if (floorAugerState != lastSentFloorAugerState || firstTime)
+  {
   nexDisplay.writeStr("floorAuger.picc", floorAugerState ? "2" : "1");
+    lastSentFloorAugerState = floorAugerState;
+  }
+
+  if (cap5State != lastCap5State || firstTime)
+  {
   // reverse logic
   nexDisplay.writeStr("blowerFull.picc", cap5State ? "1" : "2");
+    lastCap5State = cap5State;
+  }
+
+  if (airBlowerState != lastSentAirBlowerState || firstTime)
+  {
   nexDisplay.writeStr("blowerMotor.picc", airBlowerState ? "2" : "1");
+    lastSentAirBlowerState = airBlowerState;
+  }
+
+  if (cap7State != lastCap7State || firstTime)
+  {
   // reverse logic
-  nexDisplay.writeStr("binFull.picc", airBlowerState ? "2" : "1");
+    nexDisplay.writeStr("binFull.picc", cap7State ? "2" : "1");
+    lastCap7State = cap7State;
+  }
 
+  if (ds1Temp != lastDs1Temp || firstTime)
+  {
   nexDisplay.writeStr("heatUpTemp.txt", String(ds1Temp));
-  nexDisplay.writeStr("heatDownTemp.txt", String(ds2Temp));
-  nexDisplay.writeStr("coolGrainTemp.txt", String(ds3Temp));
-  nexDisplay.writeStr("outsideTemp.txt", String(ds4Temp));  
+    lastDs1Temp = ds1Temp;
+  }
 
+  if (ds2Temp != lastDs2Temp || firstTime)
+  {
+  nexDisplay.writeStr("heatDownTemp.txt", String(ds2Temp));
+    lastDs2Temp = ds2Temp;
+  }
+
+  if (ds3Temp != lastDs3Temp || firstTime)
+  {
+  nexDisplay.writeStr("coolGrainTemp.txt", String(ds3Temp));
+    lastDs3Temp = ds3Temp;
+  }
+
+  if (ds4Temp != lastDs4Temp || firstTime)
+  {
+  nexDisplay.writeStr("outsideTemp.txt", String(ds4Temp));  
+    lastDs4Temp = ds4Temp;
+  }
+
+  if (heaterAutoMode != lastSentHeaterState || firstTime)
+  {
   if (heaterAutoMode)
     nexDisplay.writeStr("heaterMode.txt", "Auto");
   else
     nexDisplay.writeStr("heaterMode.txt", "Cool");
 
+    lastSentHeaterState = heaterAutoMode;
+  }
+
+  if (augerAutoMode != lastSentAugerAutoMode || firstTime)
+  {
   if (augerAutoMode)
     nexDisplay.writeStr("augerMode.txt", "Auto");
   else
     nexDisplay.writeStr("augerMode.txt", "Manual");
   
-  if (emptyWholeDryer)
-    nexDisplay.writeStr("blowerMode.txt", "True");
+    lastSentAugerAutoMode = augerAutoMode;
+  }
+
+  if (blowerAutoMode != lastSentBlowerAutoMode || firstTime)
+  {
+    if (blowerAutoMode)
+      nexDisplay.writeStr("blowerMode.txt", "Auto");
   else
     nexDisplay.writeStr("blowerMode.txt", "Manual");
+
+    lastSentBlowerAutoMode = blowerAutoMode;
+  }
 }
 
-void UpdateSettingsPage()
+void UpdateSettingsPage(bool firstTime = false)
+{
+  if (maxGrainTemp != lastSentMaxGrainTemp || firstTime)
 {
   nexDisplay.writeStr("maxGrainTemp.txt", String(maxGrainTemp));
+    lastSentMaxGrainTemp = maxGrainTemp;
+  }
+
+  if (maxHeaterTemp != lastSentMaxHeaterTemp || firstTime)
+  {
   nexDisplay.writeStr("maxHeaterTemp.txt", String(maxHeaterTemp));
+    lastSentMaxHeaterTemp = maxHeaterTemp;
+  }
+
+  if (minTempDiff != lastSentMinTempDiff || firstTime)
+  {
   nexDisplay.writeStr("minTempDiff.txt", String(minTempDiff));
+    lastSentMinTempDiff = minTempDiff;
+  }
+
+  if (maxTempDiff != lastSentMaxTempDiff || firstTime)
+  {
   nexDisplay.writeStr("maxTempDiff.txt", String(maxTempDiff));
+    lastSentMaxTempDiff = maxTempDiff;
+  }
+
+  if (emptyWholeDryer != lastSentEmptyWholeDryer || firstTime)
+  {
   if (emptyWholeDryer)
     nexDisplay.writeStr("emptyWholeDryer.txt", "True");
   else
     nexDisplay.writeStr("emptyWholeDryer.txt", "Manual");
+
+    lastSentEmptyWholeDryer = emptyWholeDryer;
+  }
 }
 
 /// @brief Start button is pressed, dryer proccess started
@@ -599,6 +828,7 @@ void trigger0()
   currentProcessStage = DryingProcess::Drying;
   start = true;
   currentPage = Pages::Drying;
+  firstTimePageUpdate = true;
 }
 
 /// @brief End button is pressed, dryer proccess ended
@@ -613,12 +843,14 @@ void trigger1()
 void trigger2()
 {
   currentPage = Pages::Settings;
+  firstTimePageUpdate = true;
 }
 
 /// @brief Return to drying screen from settings
 void trigger3()
 {
   currentPage = Pages::Drying;
+  firstTimePageUpdate = true;
 }
 
 /// @brief Lower max grain temperature
@@ -716,4 +948,16 @@ void trigger14()
     nexDisplay.writeStr("heaterMode.txt", "Auto");
   else
     nexDisplay.writeStr("heaterMode.txt", "Cool");
+}
+
+/// @brief RemovedBlocking on drying chamber on both sides and pressed done master button
+void trigger15()
+{
+  if (!cap6State || !cap4State)
+    return;
+
+  nexDisplay.writeStr("page ", String(Pages::Drying));
+  currentProcessStage = DryingProcess::Drying;
+  currentPage = Pages::Drying;
+  firstTimePageUpdate = true;
 }
