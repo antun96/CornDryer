@@ -27,20 +27,22 @@ SoftwareSerial rs485Serial(RX_PIN, TX_PIN);
 
 int fotoSensorPin = A0; // Foto Sensor
 
-int KTypeMiso = A5; // K-Type Thermocouple MISO
-int KTypeCs = A6;   // K-Type Thermocouple CS
-int KTypeSck = A7;  // K-Type Thermocouple SCK
+int KTypeMiso = A1; // K-Type Thermocouple MISO
+int KTypeCs = A2;   // K-Type Thermocouple CS
+int KTypeSck = A3;  // K-Type Thermocouple SCK
 
 MAX6675 thermocouple(KTypeSck, KTypeCs, KTypeMiso);
 
-uint8_t adresses[2][8] = {
-    {0x28, 0x1E, 0x4D, 0x50, 0x00, 0x00, 0x00, 0x8B},
-    {0x28, 0x73, 0xEA, 0x52, 0x00, 0x00, 0x00, 0x67}};
+uint8_t adresses[3][8] = {
+    {0x28, 0x38, 0x74, 0xBF, 0x00, 0x00, 0x00, 0x2B},
+    {0x28, 0x1A, 0xA9, 0xBF, 0x00, 0x00, 0x00, 0x41},
+    {0x28, 0x33, 0x8F, 0xBF, 0x00, 0x00, 0x00, 0x05}
+  };
 
-int ds1Temp = 0;
-int ds2Temp = 0;
-int ds3Temp = 0;
-int ds4Temp = 0; // TODO: maybe not needed
+float ds1Temp = 0;
+float ds2Temp = 0;
+float ds3Temp = 0;
+float ds4Temp = 0; // TODO: maybe not needed
 
 unsigned long temperatureLastReadout;
 unsigned long temperatureReadoutInterval = 10000; // 10 seconds
@@ -54,28 +56,38 @@ int cap6State = 0;
 int cap7State = 0;
 
 int fotoSensorValue = 0;
-int kTypeTemp = 0;
+float kTypeTemp = 0;
 
 void CreateReply();
 int ReadDsSensor(int sensorPin);
 void printAddress(DeviceAddress deviceAddress);
 uint8_t findDevices(int pin);
 void ReceiveDataFromMaster();
+void CreateReplyPc();
 
 void setup()
 {
-  temperatureLastReadout = millis();
-
-  rs485Serial.begin(9600);
-
-  numberOfDevices = sensors.getDS18Count();
+  pinMode(cap1Pin, INPUT);
+  pinMode(cap2Pin, INPUT);
+  pinMode(cap3Pin, INPUT);
+  pinMode(cap4Pin, INPUT);
+  pinMode(cap5Pin, INPUT);
+  pinMode(cap6Pin, INPUT);
+  pinMode(cap7Pin, INPUT);
+  pinMode(fotoSensorPin, INPUT);
+  
+  // rs485Serial.begin(9600);
+  sensors.begin();
+  
+  numberOfDevices = sensors.getDeviceCount();
   Serial.begin(9600);
   // locate devices on the bus
-  findDevices(dsTempPin);
+  // findDevices(dsTempPin);
   Serial.print("Locating devices...");
   Serial.print("Found ");
   Serial.print(numberOfDevices, DEC);
   Serial.println(" devices.");
+  temperatureLastReadout = millis();
 }
 
 void loop()
@@ -92,25 +104,34 @@ void loop()
   if (temperatureLastReadout + temperatureReadoutInterval < millis())
   {
     sensors.requestTemperatures(); // Send the command to get temperatures
-    for (int i = 0; i < numberOfDevices; i++)
-    {
-      // Search the wire for address
-      float tempC = sensors.getTempC(adresses[i]);
-      if (i == 0)
-        ds1Temp = (int)tempC;
-      else if (i == 1)
-        ds2Temp = (int)tempC;
-      else if (i == 2)
-        ds3Temp = (int)tempC;
-      else if (i == 3)
-        ds4Temp = (int)tempC;
-    }
+
+    ds1Temp = sensors.getTempC(adresses[0]);
+    ds2Temp = sensors.getTempC(adresses[1]);
+    ds3Temp = sensors.getTempC(adresses[2]);
 
     kTypeTemp = thermocouple.readCelsius();
     temperatureLastReadout = millis();
   }
 
-  ReceiveDataFromMaster();
+  Serial.write("T1:");
+  Serial.print(adresses[0][7], HEX);
+  Serial.print((ds1Temp));
+
+  Serial.write("T2:");
+  Serial.print(adresses[1][7], HEX);
+  Serial.print(ds2Temp);
+
+  Serial.write("T3:");
+  Serial.print(adresses[2][7], HEX);
+  Serial.println(ds3Temp);
+  Serial.println("FotoSensor: ");
+  Serial.println(fotoSensorValue);
+  Serial.print("K-Type Thermocouple: ");
+  Serial.println(kTypeTemp);
+  delay(2000);
+  // CreateReplyPc();
+  // delay(10000);
+  // ReceiveDataFromMaster();
 }
 
 void ReceiveDataFromMaster()
@@ -210,4 +231,40 @@ void CreateReply()
   rs485Serial.write(static_cast<uint8_t>(kTypeTemp));
   rs485Serial.write(static_cast<uint8_t>(0xFF));
   digitalWrite(TXEnable, LOW);
+}
+
+void CreateReplyPc()
+{
+  Serial.write(static_cast<uint8_t>(0x00));
+
+  Serial.write("T1");
+  Serial.print((ds1Temp));
+
+  Serial.write("T2");
+  Serial.print(ds2Temp);
+
+  Serial.write("T3");
+  Serial.print(ds3Temp);
+
+  Serial.write("C1");
+  Serial.print(cap1State);
+  Serial.write("C2");
+  Serial.print(cap2State);
+  Serial.write("C3");
+  Serial.print(cap3State);
+  Serial.write("C4");
+  Serial.print(cap4State);
+  Serial.write("C5");
+  Serial.print(cap5State);
+  Serial.write("C6");
+  Serial.print(cap6State);
+  Serial.write("C7");
+  Serial.print(cap7State);
+
+  // Serial.write(static_cast<uint8_t>(0xF1));
+  // Serial.write(static_cast<uint8_t>(fotoSensorValue));
+
+  // Serial.write(static_cast<uint8_t>(0xE1)); // K-Type Thermocouple
+  // Serial.write(static_cast<uint8_t>(kTypeTemp));
+  // Serial.write(static_cast<uint8_t>(0xFF));
 }
